@@ -28,6 +28,7 @@ model.prepare(ctx_id=-1, det_size=(640, 640))
 index = None
 known_names = []
 active_tracking = {}  # {name: {"last_seen": datetime, "log_id": ObjectId, "is_authorized": bool}}
+pending_tracking = {} # {name: {"first_seen": datetime, "last_seen": datetime}}
 tracking_lock = threading.Lock()
 camera_running = False
 current_frame = None
@@ -124,9 +125,35 @@ def camera_loop():
                         else:
                             active_tracking[matched_name]["last_seen"] = now
                 else:
-                    # Log unknown person periodically?
-                    # For simplicity, we just draw the box for unknown and do not track their duration.
-                    pass
+                    # Log unknown person if seen for more than 15 seconds
+                    with tracking_lock:
+                        if "Unknown" not in pending_tracking:
+                            pending_tracking["Unknown"] = {"first_seen": now, "last_seen": now}
+                        else:
+                            pending_tracking["Unknown"]["last_seen"] = now
+                            time_visible = (now - pending_tracking["Unknown"]["first_seen"]).total_seconds()
+                            if time_visible >= 15:
+                                if "Unknown" not in active_tracking:
+                                    log_entry = {
+                                        "name": "Unknown",
+                                        "roll": "UNKNOWN",
+                                        "type": "unknown",
+                                        "venue": "Main Gate",
+                                        "camera": "CAM-01",
+                                        "confidence": float(distances[0][0]),
+                                        "entry_time": pending_tracking["Unknown"]["first_seen"],
+                                        "exit_time": None,
+                                        "duration_minutes": 0.0,
+                                        "status": "active"
+                                    }
+                                    result = logs_col.insert_one(log_entry)
+                                    active_tracking["Unknown"] = {
+                                        "last_seen": now,
+                                        "log_id": result.inserted_id,
+                                        "is_authorized": False
+                                    }
+                                else:
+                                    active_tracking["Unknown"]["last_seen"] = now
 
                 # Draw bounding box
                 cv.rectangle(resized_frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), color, 2)
@@ -155,6 +182,14 @@ def camera_loop():
                         }}
                     )
 
+            # Cleanup pending tracking if not seen for 5 seconds
+            to_remove_pending = []
+            for name, data in pending_tracking.items():
+                if (now - data["last_seen"]).total_seconds() > 5:
+                    to_remove_pending.append(name)
+            for name in to_remove_pending:
+                del pending_tracking[name]
+
         current_frame = resized_frame
         time.sleep(0.03) # ~30 FPS
 
@@ -175,6 +210,18 @@ app.add_middleware(
 @app.on_event("startup")
 def startup_event():
     global camera_running
+    
+    # Clean up any orphaned 'active' logs from a previous server crash/shutdown
+    orphans = logs_col.find({"status": "active"})
+    for orphan in orphans:
+        logs_col.update_one(
+            {"_id": orphan["_id"]},
+            {"$set": {
+                "exit_time": orphan["entry_time"],
+                "status": "completed"
+            }}
+        )
+        
     reload_faiss()
     camera_running = True
     thread = threading.Thread(target=camera_loop, daemon=True)
@@ -251,7 +298,9 @@ def get_logs(limit: int = 250):
             "confidence": log.get("confidence", 0.95),
             "type": log.get("type", "authorized"),
             "time": entry_time.strftime("%I:%M:%S %p"),
-            "ts": int(entry_time.timestamp() * 1000)
+            "ts": int(entry_time.timestamp() * 1000),
+            "duration": log.get("duration_minutes", 0.0),
+            "status": log.get("status", "active")
         })
             
     return {"logs": frontend_logs}

@@ -69,6 +69,7 @@ export default function LogsPage() {
               <th>Venue</th>
               <th>Camera</th>
               <th>Confidence</th>
+              <th>Duration</th>
               <th>Status</th>
               <th>Detected At</th>
             </tr>
@@ -83,6 +84,9 @@ export default function LogsPage() {
                 <td>{log.venue}</td>
                 <td className="mono-text">{log.camera}</td>
                 <td>{Math.round(Number(log.confidence) * 100)}%</td>
+                <td className="mono-text" style={{ color: log.status === 'active' ? '#16a34a' : 'inherit' }}>
+                  {log.status === 'active' ? 'Active' : `${Math.ceil(log.duration)} min`}
+                </td>
                 <td><span className={getBadgeClass(log.type)}>{log.type}</span></td>
                 <td className="mono-text">{formatFullDate(log.ts)}</td>
               </tr>

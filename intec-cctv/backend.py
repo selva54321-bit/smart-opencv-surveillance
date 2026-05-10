@@ -1,0 +1,244 @@
+from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks
+from fastapi.responses import StreamingResponse
+import cv2 as cv
+import numpy as np
+import insightface
+import faiss
+import threading
+import time
+from datetime import datetime
+from pymongo import MongoClient
+import uvicorn
+from contextlib import asynccontextmanager
+import os
+
+# MongoDB setup
+client = MongoClient("mongodb://localhost:27017/")
+db = client["cctv_db"]
+people_col = db["people"]
+logs_col = db["access_logs"]
+
+# Initialize InsightFace
+# Using CPUExecutionProvider as fallback if CUDA isn't available
+model = insightface.app.FaceAnalysis(name='buffalo_l', providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+model.prepare(ctx_id=-1, det_size=(640, 640))
+
+# Global state
+index = None
+known_names = []
+active_tracking = {}  # {name: {"last_seen": datetime, "log_id": ObjectId, "is_authorized": bool}}
+tracking_lock = threading.Lock()
+camera_running = False
+current_frame = None
+
+def reload_faiss():
+    """Load all enrolled people from MongoDB into FAISS index for fast searching."""
+    global index, known_names
+    people = list(people_col.find())
+    known_names = []
+    embeddings = []
+    
+    for p in people:
+        known_names.append({"name": p["name"], "is_authorized": p["is_authorized"]})
+        embeddings.append(p["embedding"])
+        
+    if embeddings:
+        embeddings_np = np.array(embeddings, dtype=np.float32)
+        d = embeddings_np.shape[1]
+        index = faiss.IndexFlatIP(d)
+        index.add(embeddings_np)
+        print(f"Loaded {len(embeddings)} profiles into FAISS.")
+    else:
+        index = None
+        print("No profiles found in MongoDB. FAISS index empty.")
+
+def get_face_embedding(img_np):
+    """Extract a single face embedding from an image."""
+    faces = model.get(img_np)
+    if not faces:
+        return None
+    # Assuming the first detected face is the primary one
+    embedding = faces[0].embedding.astype(np.float32).reshape(1, -1)
+    embedding /= np.linalg.norm(embedding)  # Normalize
+    return embedding[0]
+
+def camera_loop():
+    """Background thread to process the camera feed."""
+    global active_tracking, camera_running, current_frame
+    cap = cv.VideoCapture(0)
+    
+    while camera_running:
+        ret, frame = cap.read()
+        if not ret:
+            time.sleep(0.1)
+            continue
+            
+        resized_frame = cv.resize(frame, (640, 480))
+        now = datetime.now()
+        
+        faces = model.get(resized_frame)
+        
+        if faces and index is not None:
+            for face in faces:
+                bbox = face.bbox.astype(int)
+                embedding = face.embedding.astype(np.float32).reshape(1, -1)
+                embedding /= np.linalg.norm(embedding)
+                
+                distances, indices = index.search(embedding, k=1)
+                
+                matched_name = "Unknown"
+                color = (0, 0, 255) # Red for unknown
+                
+                if distances[0][0] > 0.5:
+                    matched_person = known_names[indices[0][0]]
+                    matched_name = matched_person["name"]
+                    is_auth = matched_person["is_authorized"]
+                    color = (0, 255, 0) if is_auth else (0, 165, 255) # Green if auth, Orange if not
+                    
+                    with tracking_lock:
+                        if matched_name not in active_tracking:
+                            # New entry
+                            log_entry = {
+                                "name": matched_name,
+                                "is_authorized": is_auth,
+                                "entry_time": now,
+                                "exit_time": None,
+                                "duration_minutes": 0.0,
+                                "status": "active"
+                            }
+                            result = logs_col.insert_one(log_entry)
+                            active_tracking[matched_name] = {
+                                "last_seen": now,
+                                "log_id": result.inserted_id,
+                                "is_authorized": is_auth
+                            }
+                        else:
+                            active_tracking[matched_name]["last_seen"] = now
+
+                # Draw bounding box
+                cv.rectangle(resized_frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), color, 2)
+                cv.putText(resized_frame, f"{matched_name} ({distances[0][0]:.2f})", (bbox[0], bbox[1] - 10), cv.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+
+        # Cleanup old sessions (not seen for 60 seconds)
+        with tracking_lock:
+            to_remove = []
+            for name, data in active_tracking.items():
+                if (now - data["last_seen"]).total_seconds() > 60:
+                    to_remove.append(name)
+                    
+            for name in to_remove:
+                data = active_tracking.pop(name)
+                # Calculate duration
+                log_doc = logs_col.find_one({"_id": data["log_id"]})
+                if log_doc:
+                    entry_time = log_doc["entry_time"]
+                    duration_minutes = (data["last_seen"] - entry_time).total_seconds() / 60.0
+                    logs_col.update_one(
+                        {"_id": data["log_id"]},
+                        {"$set": {
+                            "exit_time": data["last_seen"],
+                            "duration_minutes": round(duration_minutes, 2),
+                            "status": "completed"
+                        }}
+                    )
+
+        current_frame = resized_frame
+        time.sleep(0.03) # ~30 FPS
+
+    cap.release()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global camera_running
+    reload_faiss()
+    camera_running = True
+    thread = threading.Thread(target=camera_loop, daemon=True)
+    thread.start()
+    yield
+    camera_running = False
+    thread.join(timeout=2.0)
+
+app = FastAPI(lifespan=lifespan, title="CCTV Face Recognition API")
+
+@app.post("/api/enroll")
+async def enroll_person(name: str = Form(...), is_authorized: bool = Form(True), file: UploadFile = File(...)):
+    """Admin endpoint to enroll a new person via face scan."""
+    contents = await file.read()
+    nparr = np.frombuffer(contents, np.uint8)
+    img_np = cv.imdecode(nparr, cv.IMREAD_COLOR)
+    
+    if img_np is None:
+        return {"error": "Invalid image file."}
+        
+    embedding = get_face_embedding(img_np)
+    if embedding is None:
+        return {"error": "No face detected in the provided image."}
+        
+    person_doc = {
+        "name": name,
+        "is_authorized": is_authorized,
+        "embedding": embedding.tolist(),
+        "created_at": datetime.now()
+    }
+    
+    # Allow re-enrollment by overwriting old data for the same name
+    people_col.delete_many({"name": name})
+    people_col.insert_one(person_doc)
+    
+    # Reload the FAISS index to include the new person immediately
+    reload_faiss()
+    return {"success": True, "message": f"Successfully enrolled {name}"}
+
+@app.get("/api/live-stats")
+def live_stats():
+    """Get currently active people in the room."""
+    with tracking_lock:
+        active_list = []
+        for name, data in active_tracking.items():
+            active_list.append({
+                "name": name,
+                "is_authorized": data["is_authorized"],
+                "last_seen": data["last_seen"].isoformat()
+            })
+            
+    return {
+        "people_count": len(active_list),
+        "active_people": active_list
+    }
+
+@app.get("/api/logs")
+def get_logs(limit: int = 50):
+    """Get historical access logs (who entered, when, and for how long)."""
+    logs = list(logs_col.find().sort("entry_time", -1).limit(limit))
+    for log in logs:
+        log["_id"] = str(log["_id"]) # Convert ObjectId to string for JSON serialization
+        if log.get("entry_time"):
+            log["entry_time"] = log["entry_time"].isoformat()
+        if log.get("exit_time"):
+            log["exit_time"] = log["exit_time"].isoformat()
+            
+    return {"logs": logs}
+
+def generate_video_feed():
+    """Generator for streaming the MJPEG video feed."""
+    while True:
+        if current_frame is not None:
+            ret, buffer = cv.imencode('.jpg', current_frame)
+            if ret:
+                frame_bytes = buffer.tobytes()
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+        else:
+            time.sleep(0.1)
+
+@app.get("/api/video-feed")
+def video_feed():
+    """Stream the live camera feed with drawn bounding boxes."""
+    return StreamingResponse(generate_video_feed(), media_type="multipart/x-mixed-replace; boundary=frame")
+
+if __name__ == "__main__":
+    uvicorn.run("backend:app", host="0.0.0.0", port=8000, reload=True)
+
+
+
+

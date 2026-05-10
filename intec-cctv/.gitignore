@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*$py.class
+logs/
+database/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+images/
+labels.pkl
+face_index.faiss
+face_db.json

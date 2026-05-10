@@ -1,4 +1,5 @@
 from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import cv2 as cv
 import numpy as np
@@ -39,7 +40,7 @@ def reload_faiss():
     embeddings = []
     
     for p in people:
-        known_names.append({"name": p["name"], "is_authorized": p["is_authorized"]})
+        known_names.append({"name": p["name"], "is_authorized": p["is_authorized"], "roll": p.get("roll", "UNKNOWN")})
         embeddings.append(p["embedding"])
         
     if embeddings:
@@ -87,12 +88,16 @@ def camera_loop():
                 distances, indices = index.search(embedding, k=1)
                 
                 matched_name = "Unknown"
+                matched_roll = "UNKNOWN"
+                type_str = "unknown"
                 color = (0, 0, 255) # Red for unknown
                 
                 if distances[0][0] > 0.5:
                     matched_person = known_names[indices[0][0]]
                     matched_name = matched_person["name"]
+                    matched_roll = matched_person["roll"]
                     is_auth = matched_person["is_authorized"]
+                    type_str = "authorized" if is_auth else "unauthorized"
                     color = (0, 255, 0) if is_auth else (0, 165, 255) # Green if auth, Orange if not
                     
                     with tracking_lock:
@@ -100,7 +105,11 @@ def camera_loop():
                             # New entry
                             log_entry = {
                                 "name": matched_name,
-                                "is_authorized": is_auth,
+                                "roll": matched_roll,
+                                "type": type_str,
+                                "venue": "Main Gate",
+                                "camera": "CAM-01",
+                                "confidence": float(distances[0][0]),
                                 "entry_time": now,
                                 "exit_time": None,
                                 "duration_minutes": 0.0,
@@ -114,6 +123,10 @@ def camera_loop():
                             }
                         else:
                             active_tracking[matched_name]["last_seen"] = now
+                else:
+                    # Log unknown person periodically?
+                    # For simplicity, we just draw the box for unknown and do not track their duration.
+                    pass
 
                 # Draw bounding box
                 cv.rectangle(resized_frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), color, 2)
@@ -147,21 +160,33 @@ def camera_loop():
 
     cap.release()
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
+app = FastAPI(title="CCTV Face Recognition API")
+
+# Add CORS middleware to allow the Vite frontend to connect
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], # In production, restrict to localhost:5173
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Use lifespan events
+@app.on_event("startup")
+def startup_event():
     global camera_running
     reload_faiss()
     camera_running = True
     thread = threading.Thread(target=camera_loop, daemon=True)
     thread.start()
-    yield
-    camera_running = False
-    thread.join(timeout=2.0)
 
-app = FastAPI(lifespan=lifespan, title="CCTV Face Recognition API")
+@app.on_event("shutdown")
+def shutdown_event():
+    global camera_running
+    camera_running = False
 
 @app.post("/api/enroll")
-async def enroll_person(name: str = Form(...), is_authorized: bool = Form(True), file: UploadFile = File(...)):
+async def enroll_person(name: str = Form(...), roll: str = Form(...), is_authorized: bool = Form(True), file: UploadFile = File(...)):
     """Admin endpoint to enroll a new person via face scan."""
     contents = await file.read()
     nparr = np.frombuffer(contents, np.uint8)
@@ -176,6 +201,7 @@ async def enroll_person(name: str = Form(...), is_authorized: bool = Form(True),
         
     person_doc = {
         "name": name,
+        "roll": roll,
         "is_authorized": is_authorized,
         "embedding": embedding.tolist(),
         "created_at": datetime.now()
@@ -207,17 +233,28 @@ def live_stats():
     }
 
 @app.get("/api/logs")
-def get_logs(limit: int = 50):
-    """Get historical access logs (who entered, when, and for how long)."""
-    logs = list(logs_col.find().sort("entry_time", -1).limit(limit))
-    for log in logs:
-        log["_id"] = str(log["_id"]) # Convert ObjectId to string for JSON serialization
-        if log.get("entry_time"):
-            log["entry_time"] = log["entry_time"].isoformat()
-        if log.get("exit_time"):
-            log["exit_time"] = log["exit_time"].isoformat()
+def get_logs(limit: int = 250):
+    """Get historical access logs (who entered, when, and for how long). Formatted for React dashboard."""
+    db_logs = list(logs_col.find().sort("entry_time", -1).limit(limit))
+    frontend_logs = []
+    
+    for log in db_logs:
+        entry_time = log.get("entry_time")
+        if not entry_time: continue
+        
+        frontend_logs.append({
+            "id": str(log["_id"]),
+            "roll": log.get("roll", "UNKNOWN"),
+            "name": log.get("name", "Unknown"),
+            "venue": log.get("venue", "Main Gate"),
+            "camera": log.get("camera", "CAM-01"),
+            "confidence": log.get("confidence", 0.95),
+            "type": log.get("type", "authorized"),
+            "time": entry_time.strftime("%I:%M:%S %p"),
+            "ts": int(entry_time.timestamp() * 1000)
+        })
             
-    return {"logs": logs}
+    return {"logs": frontend_logs}
 
 def generate_video_feed():
     """Generator for streaming the MJPEG video feed."""

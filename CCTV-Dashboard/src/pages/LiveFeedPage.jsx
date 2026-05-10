@@ -72,30 +72,44 @@ export default function LiveFeedPage() {
                 <span className="pill">{venue.people} people</span>
               </div>
 
-              <div className="camera-frame">
-                <div className="camera-hud">
-                  <span>REC LIVE</span>
-                  <span>{fps} fps</span>
-                </div>
+              <div className="camera-frame" style={{ position: "relative", overflow: "hidden", minHeight: 240, backgroundColor: "#000" }}>
+                {venue.camera === "CAM-01" ? (
+                  <img
+                    src="http://localhost:8000/api/video-feed"
+                    alt={`Live feed for ${venue.name}`}
+                    style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+                    onError={(e) => {
+                      e.target.style.display = 'none';
+                      e.target.parentElement.innerHTML = '<div style="color: white; padding: 20px; text-align: center; height: 100%; display: flex; align-items: center; justify-content: center;">Camera Feed Offline</div>';
+                    }}
+                  />
+                ) : (
+                  <>
+                    <div className="camera-hud">
+                      <span>REC LIVE</span>
+                      <span>{fps} fps</span>
+                    </div>
 
-                <div className="camera-box camera-box--authorized" style={{ top: "24%", left: "10%", width: "18%", height: "38%" }}>
-                  <span>AUTH 0.93</span>
-                </div>
-                {detections > 1 ? (
-                  <div className="camera-box camera-box--unauthorized" style={{ top: "32%", right: "14%", width: "16%", height: "34%" }}>
-                    <span>UNAUTH 0.84</span>
-                  </div>
-                ) : null}
-                {detections > 2 ? (
-                  <div className="camera-box camera-box--unknown" style={{ bottom: "18%", left: "38%", width: "14%", height: "26%" }}>
-                    <span>UNKNOWN 0.44</span>
-                  </div>
-                ) : null}
+                    <div className="camera-box camera-box--authorized" style={{ top: "24%", left: "10%", width: "18%", height: "38%" }}>
+                      <span>AUTH 0.93</span>
+                    </div>
+                    {detections > 1 ? (
+                      <div className="camera-box camera-box--unauthorized" style={{ top: "32%", right: "14%", width: "16%", height: "34%" }}>
+                        <span>UNAUTH 0.84</span>
+                      </div>
+                    ) : null}
+                    {detections > 2 ? (
+                      <div className="camera-box camera-box--unknown" style={{ bottom: "18%", left: "38%", width: "14%", height: "26%" }}>
+                        <span>UNKNOWN 0.44</span>
+                      </div>
+                    ) : null}
 
-                <div className="camera-hud-bottom">
-                  <span>{venue.location}</span>
-                  <span>{detections} live detections</span>
-                </div>
+                    <div className="camera-hud-bottom">
+                      <span>{venue.location}</span>
+                      <span>{detections} live detections</span>
+                    </div>
+                  </>
+                )}
               </div>
 
               <div className="pill-row" style={{ marginTop: 18 }}>

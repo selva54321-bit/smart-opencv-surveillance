@@ -2,24 +2,35 @@ import { useEffect, useState } from "react";
 import { Navigate, Route, Routes, useNavigate } from "react-router-dom";
 import Login from "./components/Login";
 import Dashboard from "./components/Dashboard";
-import { genLogs, genNewLog } from "./data/mockData";
 import OverviewPage from "./pages/OverviewPage";
 import LiveFeedPage from "./pages/LiveFeedPage";
 import AnalyticsPage from "./pages/AnalyticsPage";
 import LogsPage from "./pages/LogsPage";
 import AlertsPage from "./pages/AlertsPage";
+import EnrollPage from "./pages/EnrollPage";
 
 export default function App() {
   const [loggedIn, setLoggedIn] = useState(false);
-  const [logs, setLogs] = useState(() => genLogs(220));
+  const [logs, setLogs] = useState([]);
   const navigate = useNavigate();
 
   useEffect(() => {
     if (!loggedIn) return undefined;
 
-    const intervalId = setInterval(() => {
-      setLogs((previous) => [genNewLog(), ...previous].slice(0, 260));
-    }, 4000);
+    const fetchLogs = async () => {
+      try {
+        const res = await fetch("http://localhost:8000/api/logs");
+        const data = await res.json();
+        if (data.logs) {
+          setLogs(data.logs);
+        }
+      } catch (e) {
+        console.error("Failed to fetch logs:", e);
+      }
+    };
+
+    fetchLogs();
+    const intervalId = setInterval(fetchLogs, 4000);
 
     return () => clearInterval(intervalId);
   }, [loggedIn]);
@@ -49,6 +60,7 @@ export default function App() {
         <Route path="analytics" element={<AnalyticsPage />} />
         <Route path="logs" element={<LogsPage />} />
         <Route path="alerts" element={<AlertsPage />} />
+        <Route path="enroll" element={<EnrollPage />} />
       </Route>
       <Route path="*" element={<Navigate to={loggedIn ? "/" : "/login"} replace />} />
     </Routes>

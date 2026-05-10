@@ -8,6 +8,7 @@ const NAV_ITEMS = [
   { id: "analytics", label: "Analytics",       icon: ICONS.trend,  path: "/analytics" },
   { id: "logs",      label: "Detection Log",   icon: ICONS.list,   path: "/logs" },
   { id: "alerts",    label: "Alerts",          icon: ICONS.alert,  path: "/alerts" },
+  { id: "enroll",    label: "Add Person",      icon: ICONS.users,  path: "/enroll" },
 ];
 
 export default function Sidebar({ logs, onLogout }) {

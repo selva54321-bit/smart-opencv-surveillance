@@ -21,7 +21,9 @@ logs_col = db["access_logs"]
 
 # Initialize InsightFace
 # Using CPUExecutionProvider as fallback if CUDA isn't available
-model = insightface.app.FaceAnalysis(name='buffalo_l', providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+# model = insightface.app.FaceAnalysis(name='buffalo_l', providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+model = insightface.app.FaceAnalysis(name='buffalo_l', providers=['CUDAExecutionProvider'])
+
 model.prepare(ctx_id=-1, det_size=(640, 640))
 
 # Global state

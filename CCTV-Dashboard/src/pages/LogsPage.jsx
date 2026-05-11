@@ -85,7 +85,9 @@ export default function LogsPage() {
                 <td className="mono-text">{log.camera}</td>
                 <td>{Math.round(Number(log.confidence) * 100)}%</td>
                 <td className="mono-text" style={{ color: log.status === 'active' ? '#16a34a' : 'inherit' }}>
-                  {log.status === 'active' ? 'Active' : `${Math.ceil(log.duration)} min`}
+                  {log.status === 'active' 
+                    ? 'Active' 
+                    : (log.duration < 1 ? '< 1 min' : `${Math.ceil(log.duration)} min`)}
                 </td>
                 <td><span className={getBadgeClass(log.type)}>{log.type}</span></td>
                 <td className="mono-text">{formatFullDate(log.ts)}</td>

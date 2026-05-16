@@ -70,7 +70,8 @@ def get_face_embedding(img_np):
 def camera_loop():
     """Background thread to process the camera feed."""
     global active_tracking, camera_running, current_frame
-    cap = cv.VideoCapture(0)
+    # Using the RTSP URL from live.py
+    cap = cv.VideoCapture("rtsp://admin:intec2026@192.168.1.64:554")
     
     while camera_running:
         ret, frame = cap.read()

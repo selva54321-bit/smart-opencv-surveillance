@@ -14,7 +14,8 @@ from contextlib import asynccontextmanager
 import os
 
 # MongoDB setup
-client = MongoClient("mongodb://localhost:27017/")
+# The password 'Dinesh@63743' has the '@' symbol URL-encoded as '%40'
+client = MongoClient("mongodb+srv://rdineshdinz12_db_user:Dinesh%4063743@facerecognition.53eagwn.mongodb.net/?appName=FaceRecognition")
 db = client["cctv_db"]
 people_col = db["people"]
 logs_col = db["access_logs"]

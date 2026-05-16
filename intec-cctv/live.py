@@ -26,7 +26,7 @@ index = faiss.read_index('face_index.faiss')
 
 # Camera URLs
 camera_urls = [
-    0
+    "rtsp://admin:intec2026@192.168.1.64:554",
 ]
 
 # Desired resolution for processing/display
